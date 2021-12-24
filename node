@@ -1,0 +1,307 @@
+package com.cmb.neo4j.service.batchanalysis.impl;
+
+import com.cmb.neo4j.common.BatchAnalysisCommon;
+import com.cmb.neo4j.common.Platform;
+import com.cmb.neo4j.exception.Neo4jServiceException;
+import com.cmb.neo4j.pojo.request.ObjHierarchyRequest;
+import com.cmb.neo4j.pojo.result.ObjHierarchyResult;
+import com.cmb.neo4j.service.batchanalysis.ObjHierarchyService;
+import com.cmb.neo4j.service.redis.RedisService;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
+import java.util.*;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
+import org.neo4j.driver.v1.Record;
+import org.neo4j.driver.v1.Session;
+import org.neo4j.driver.v1.StatementResult;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
+
+/**
+ * @author 罗文良IT05965
+ * @since 2021/12/23 16:37
+ **/
+@Slf4j
+@Service
+public class ObjHierarchyServiceImpl implements ObjHierarchyService {
+
+    @Autowired
+    private RedisService redisService;
+
+    @Autowired
+    private Session neo4jSession;
+
+    @Override
+    public ObjHierarchyResult downHierarchyAnalyze(ObjHierarchyRequest request) {
+
+        // 去除空格并转换成大写
+        request.setPlatform(request.getPlatform().trim().toUpperCase());
+        request.setSchemaName(request.getSchemaName().trim().toUpperCase());
+        request.setObjName(request.getObjName().trim().toUpperCase());
+
+        // 验证该对象是否存在
+        String objId = this.getObjId(request);
+        if (StringUtils.isBlank(objId)) {
+            throw new Neo4jServiceException("对象不存在，请检查对象名称与平台是否有误");
+        }
+
+        // 验证是否满足分析条件
+        analyzingValid(objId);
+
+        // 循环找出所有下游节点
+
+        // 目标数据  一级下游数 总下游对象数 下游最大层级
+        Integer firstDownObjNum = 0;
+        Integer totalDownObjNum = 0;
+        Integer maxHierarchy = 0;
+
+        try {
+            // 只需要查询出下游对象的ID即可
+
+            // 所有已分析对象ID集合
+            Set<String> analyzedObjIdSet = Sets.newHashSet(objId);
+
+            // 本次查询下游的参数
+            Map<String, String> paramMap = new HashMap<>(1);
+            paramMap.put("objId", objId);
+            // 加入到查询列表
+            List<Map<String, String>> nextQueryList = Lists.newArrayList(paramMap);
+
+            Map<String, Integer> objLevelMap = new HashMap<>(1024);
+
+        } catch (Exception e) {
+
+        } finally {
+            // 删除正在分析的key
+        }
+
+        return null;
+    }
+
+    /**
+     *
+     * @param analyzedObjIdSet 已分析过的节点集合
+     * @param currentObjId  当前分析对象ID
+     * @param objLevelMap  已有对象的最大层级
+     * @param currentHierarchy  当前分析层级 从1开始
+     * @param firstDownObjNum 一级下游数
+     * @param totalDownObjNum 总下游数
+     * @param maxHierarchy 下游最大层级
+     */
+    private void analyzing(Set<String> analyzedObjIdSet, String currentObjId, Map<String, Integer> objHierarchyMap,
+                           int currentHierarchy,
+                           Integer firstDownObjNum, Integer totalDownObjNum, Integer maxHierarchy) {
+
+        Map<String, Object> queryParam = new HashMap<>(1);
+        queryParam.put("objId", currentObjId);
+        // 查询下游
+        StatementResult result = neo4jSession.run(DOWN_OBJ_ID_CQL, queryParam);
+
+        if (!result.hasNext()) {
+            // 没有查到下游数据 说明一条链路已经走到叶子节点
+            return;
+        }
+
+        // 取当前层级与截至目前为止的下游最大层级数的最大值为下游最大层级
+        maxHierarchy = Math.max(currentHierarchy, maxHierarchy);
+
+        // 遍历结果取出所有下游ID
+        while (result.hasNext()) {
+            Record record = result.next();
+            // 获取下游对象ID
+            String subObjId = record.get("objId").toString().replace("\"", "");
+
+            if (analyzedObjIdSet.contains(subObjId)) {
+                // 分析过跳过
+                continue;
+            }
+
+            // 所有下游总数 有则加1
+            totalDownObjNum++;
+
+            if (currentHierarchy == 1) {
+                // 当前等级为1 一级下游数加1
+                firstDownObjNum++;
+            }
+
+            // 加入已分析列表
+            analyzedObjIdSet.add(subObjId);
+
+            // 递归执行分析下一层结果
+            analyzing(analyzedObjIdSet, nextQueryParam, ++currentHierarchy, firstDownObjNum, totalDownObjNum, maxHierarchy);
+        }
+    }
+
+    // 此方法执行完 nodeSubIds.size() - 1 就是所有下游节点的总数 nodeSubIds.get(objId).size()就是一级下游总数
+    // lastObjId 上一层节点ID 即currentObjId的父节点
+    private void collectNode(String lastObjId, String currentObjId, Map<String, Node> nodeMap) {
+
+        Node currentNode = nodeMap.get(currentObjId);
+
+        if (null != currentNode) {
+            // 已经有了就不再遍历下去了 但是lastObjId是属于currentObjId的上游的需要加上
+            currentNode.addSupNodeId(lastObjId);
+            return;
+        }
+
+        currentNode = new Node(currentObjId);
+        currentNode.addSupNodeId(lastObjId);
+
+        Map<String, Object> queryParam = new HashMap<>(1);
+        queryParam.put("objId", currentObjId);
+        // 查询下游
+        StatementResult result = neo4jSession.run(DOWN_OBJ_ID_CQL, queryParam);
+
+        if (!result.hasNext()) {
+            // 没有查到下游数据 说明一条链路已经走到叶子节点
+            currentNode.setSubIds(Collections.emptyList());
+            nodeMap.put(currentObjId, currentNode);
+            return;
+        }
+
+
+        List<String> subIdList = new ArrayList<>(16);
+
+        while (result.hasNext()) {
+            Record record = result.next();
+            // 获取下游对象ID保存
+            String subObjId = record.get("objId").toString().replace("\"", "");
+            subIdList.add(subObjId);
+
+            // 继续分析资节点的下游节点
+            collectNode(currentObjId, subObjId, nodeMap);
+        }
+
+        // 设置所有下游节点ID
+        currentNode.setSubIds(subIdList);
+
+        nodeMap.put(currentObjId, currentNode);
+    }
+
+    private void getHierarchy(String queryObjId, Map<String, Node> nodeMap) {
+        // queryObjId查询对象的ID即根对象id  nodeSubIds所有节点对应的字节点集合
+
+        Node node = nodeMap.get(queryObjId);
+        if (null == node) {
+            // 0
+            return;
+        }
+
+        doHierarchy(nodeMap, node.getSubIds(), 0);
+    }
+
+    // idList 当前层需要处理的节点ID  currentHierarchy当前遍历的层级 lastObjId 上一个节点
+    private void doHierarchy(Map<String, Node> nodeMap, List<String> idList, int currentHierarchy) {
+
+        if (idList.isEmpty()) {
+            return;
+        }
+
+        // 保存下一层需要分析的节点ID
+        List<String> nextIdList = new ArrayList<>(32);
+
+        // 处理子节点
+        for (String subId : idList) {
+            Node subNode = nodeMap.get(subId);
+            if (null == subNode) {
+                // 理论上是不可能为空的
+                continue;
+            }
+            // 当前链路层级
+            subNode.getHierarchy().add(currentHierarchy + 1);
+
+            // 当nextNode的上游节点数量与链路层级的数量相等时说明subNode的所有上游已经遍历完成 下一次就该遍历子节点了
+            if (subNode.supNodeSize() == subNode.getHierarchy().size()) {
+                // 把所有子节点加入到下一层分析中
+                nextIdList.addAll(subNode.getSubIds());
+            }
+            // 分析下一层
+        }
+
+        doHierarchy(nodeMap, nextIdList, ++currentHierarchy);
+    }
+
+    // TODO 此代码需要加锁
+    private void analyzingValid(String objId) {
+        // 获取分析中的数据
+        Set<Object> hashKeys = redisService.getHashKeys(ANALYZING_OBJ_KEY);
+
+        if (!CollectionUtils.isEmpty(hashKeys)) {
+
+            // 对象分析中返回提示
+            if (hashKeys.contains(objId)) {
+                throw new Neo4jServiceException("当前对象正在分析当中，请稍后再试");
+            }
+
+            // 大于等于最大分析数量 返回提示
+            if (MAX_ANALYZING_NUM >= hashKeys.size()) {
+                throw new Neo4jServiceException("当前应用已达到最大分析数量，请稍后再试");
+            }
+        }
+
+        // 符合条件加入分析队列中
+        // TODO 实测得到平均时间后加上一个过期时间 防止删除失败一直处于分析中
+        redisService.setHashValue(ANALYZING_OBJ_KEY, objId, 1);
+    }
+
+    private String getObjId(ObjHierarchyRequest request) {
+        Platform platform = Platform.getByName(request.getPlatform());
+        if (null == platform) {
+            throw new Neo4jServiceException("未识别的平台值：" + request.getPlatform());
+        }
+        // 根据类型查询指定平台的对象ID
+        String getObjIdSql = BatchAnalysisCommon.getObjIdCql.replace(":otherCondition", "AND n.objType=$objType");
+
+        Map<String, Object> paramMap = new HashMap<>(3);
+        paramMap.put("schemaName", request.getSchemaName());
+        paramMap.put("objName", request.getObjName());
+        paramMap.put("objType", platform.getOption());
+
+        StatementResult result = neo4jSession.run(getObjIdSql, paramMap);
+
+        String objId = null;
+        // 遍历查询结果
+        while (result.hasNext()) {
+            Record record = result.next();
+
+            // 获取所需要的信息
+            objId = record.get("startId").toString().replace("\"", "");
+        }
+
+        return objId;
+    }
+
+    @Getter
+    @Setter
+    static class Node {
+
+        private String objId;
+
+        private List<String> subIds;
+
+        private List<String> supIds;
+
+        // 存储当前节点每次遍历的层级数
+        private List<Integer> hierarchy;
+
+        public Node(String objId) {
+            this.objId = objId;
+            this.hierarchy = new ArrayList<>(16);
+            this.supIds = new ArrayList<>(16);
+        }
+
+        public int supNodeSize() {
+            return supIds.size();
+        }
+
+        public void addSupNodeId(String objId) {
+            if (null != objId) {
+                supIds.add(objId);
+            }
+        }
+    }
+}
