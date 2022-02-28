@@ -1,0 +1,122 @@
+package com.zh.util.cond;
+
+import com.zh.util.cond.fun.Judge;
+import com.zh.util.cond.fun.Value;
+import java.util.function.Supplier;
+
+/**
+ * 条件接口
+ * @author 罗文良IT05965
+ * @since 2021/8/10 16:40
+ * when表示声明一个判断条件
+ * then表示条件成立的结果
+ * when到then之间为一组判断，当这一组when所声明的条件成立时返回then所声明的值
+ * 当有多个when条件时可以指定条件拼接方式是and还是or，and可以省略，or不可以
+ * other为之前的n组w条件不成立时所返回的值
+ * value为获取最终的结果，可指定默认值或者抛出指定异常
+ * 方法具体使用请参考接口定义
+ **/
+public interface IIf<Children extends AbstractIf<Children, C, J, R, V>, C, J extends Judge, R, V extends Value> {
+
+    /**
+     * 使用Objects.equals与默认被比较值比较
+     * @param other 比较值
+     * @return Ifs
+     */
+    Children when(C other);
+
+    /**
+     * 使用判断函数比较
+     * @param judge
+     * @return Children
+     */
+    Children when(J judge);
+
+    /**
+     * 设置获取值函数
+     * @param valFun 当then之前的条件都成立时使用的获取值的函数
+     * @return Children
+     */
+    Children then(V valFun);
+
+    /**
+     * 设置返回值
+     * @param val 当then之前的条件都成立时返回改值
+     * @return Children
+     */
+    Children then(R val);
+
+    /**
+     * 设置验证条件都不通过时使用的获取值函数
+     * @param valFun 获取值函数
+     * @return Children
+     */
+    Children other(V valFun);
+
+    /**
+     * 设置验证条件都不通过时返回的值
+     * @param val 返回的值
+     * @return Children
+     */
+    Children other(R val);
+
+    /**
+     * 标识条件之间的连接方式为&&，默认为此值可省略 可在when之前或者之后调用
+     * 前式调用： test().and().when().when().then(),说明and之后的when条件都是以&&拼接
+     * 后式调用： test().when().and().when().and().then(),说明when之间是以&&拼接
+     * @return Children
+     */
+    Children and();
+
+    /**
+     * 标识条件直接的连接方式为|| 可在when之前或者之后调用 or()一定要显式调用，因为默认值是&&拼接
+     * 前式调用： test().or().when().when().then(),说明or之后的when条件都是以||拼接
+     * 后式调用： test().when().or().when().or().then(),说明when条件之间是以||拼接
+     * @return Children
+     */
+    Children or();
+
+    /**
+     * 获取最终的值
+     * @return R 如果最终没有匹配上返回null
+     */
+    default R value() {
+        return this.value((R) null);
+    }
+
+    /**
+     * 获取最终的值
+     * @param defVal 默认返回值
+     * @return R 如果最终没有匹配上返回defVal
+     */
+    default R value(R defVal) {
+        return this.value(defVal, null, null);
+    }
+
+    /**
+     * 获取最终的值
+     * @param defValFun 默认取值函数
+     * @return R 如果最终没有匹配上返回defValFun获取到的值
+     */
+    default R value(V defValFun) {
+        return this.value(null, defValFun, null);
+    }
+
+    /**
+     * 获取最终的值
+     * @param exceptionSupplier 未匹配到抛出的异常
+     * @return R 如果最终没有匹配上则抛出指定异常
+     */
+    default R value(Supplier<? extends RuntimeException> exceptionSupplier) {
+        return this.value(null, null, exceptionSupplier);
+    }
+
+    /**
+     * 获取最终的值
+     * @param defVal 默认值
+     * @param defValFun  默认取值函数
+     * @param exceptionSupplier 默认异常
+     * @return R 如果最终没有匹配上则优先使用1、defValFun 2、defVal 3、exceptionSupplier 4、null
+     */
+    R value(R defVal, V defValFun, Supplier<? extends RuntimeException> exceptionSupplier);
+}
